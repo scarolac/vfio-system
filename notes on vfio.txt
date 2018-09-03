@@ -1,0 +1,86 @@
+# packages needed:
+qemu libvirt bridge-utils virt-manager ebtables dnsmasq linux-vfio (kernel, needs keys from AUR)
+
+# enable libvirt and virt-manager first launch
+sudo systemctl enable --now libvirtd
+sudo virt-manager
+sudo modprobe vfio-pci   # at least once
+
+# add user access
+sudo gpasswd -a $(whoami) kvm
+sudo gpasswd -a $(whoami) libvirt
+
+# config files go in /etc/modprobe.d/
+kvm.conf
+vfio.conf
+
+# vfio-pci-override.sh file
+saved in /sbin
+edit dev to the pci device needed
+
+# update mkinitcpio and grub last
+mkinitcpio -p linux-vfi0
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# hyper v enlightenments and xml modifications
+sudo virt-xml $VMNAME --edit --features hyperv_relaxed=on,hyperv_vapic=on,hyperv_spinlocks=on,hyperv_spinlocks_retries=8191
+sudo virt-xml $VMNAME --edit --clock hypervclock_present=yes 
+
+or add this to <clock> 
+<timer name='hypervclock' present='yes'/>
+
+# qemu command args for nvidia passthrough
+-cpu host,kvm=off,hv_vendor_id=12CHARID  # hv_vendor_id is for nvidia cards, (old, new way below)
+
+    <hyperv>
+      <relaxed state='on'/>
+      <vapic state='on'/>
+      <spinlocks state='on' retries='8191'/>
+      <vendor_id state='on' value='10DE'/>
+    </hyperv>
+    <kvm>
+      <hidden state='on'/>
+    </kvm>
+
+# to find other hard drives, qemu xml must be edited, cannot add with virt-manager
+# get device ids with ls -l /dev/disk/by-id
+sudo EDITOR=gedit virsh edit <vm-name>
+
+	add this section to the file in <devices>
+	
+	<disk type='block' device='disk'>
+      <driver name='qemu' type='raw'/>
+      <source dev='/dev/disk/by-id/{DEVICE ID HERE}'/>
+      <target dev='vdb' bus='virtio'/>                   # make sure target dev is unused elsewhere
+    </disk>
+
+# edit domain at the top of the xml to allow qemu command line args
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+
+# Audio edit /etc/libvirt/qemu.conf and the virsh xml
+user = "$(whoami)"   # put the user id in qemu.conf
+
+# build qemu for audio fix
+git clone https://github.com/spheenik/qemu.git
+cd qemu
+git checkout 2.12.0
+
+mkdir build
+cd build
+../configure --prefix=/opt/qemu-test --python=/usr/bin/python2 --target-list=x86_64-softmmu --audio-drv-list=pa --disable-werror
+make
+sudo make install
+
+# In the XML
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+...
+<emulator>/opt/qemu-test/bin/qemu-system-x86_64</emulator>
+...
+</devices>
+  <qemu:commandline>
+    <qemu:env name='QEMU_AUDIO_DRV' value='pa'/>
+    <qemu:env name='QEMU_PA_SERVER' value='/run/user/1000/pulse/native'/>
+    <qemu:env name='QEMU_PA_LATENCY_OUT' value='20'/>
+    <qemu:env name='QEMU_PA_SAMPLES' value='2205'/>
+  </qemu:commandline>
+</domain>
